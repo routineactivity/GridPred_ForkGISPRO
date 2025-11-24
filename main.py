@@ -1,9 +1,10 @@
-import contextily as ctx
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import pandas as pd
+from scipy.spatial import cKDTree
+import numpy as np
 from shapely.geometry import box
 from sklearn.ensemble import RandomForestRegressor
+from src.plotting import visualize_predictions
 
 INPUT_FILE_PATH = "/home/gmcirco/Documents/Projects/data/crime_2019-2023_v2.csv"
 INPUT_FEATURES_PATH = "/home/gmcirco/Documents/Projects/data/features_malmo.csv"
@@ -41,14 +42,36 @@ def _count_point_in_polygon(points_gdf, polygon_gdf):
 
 
 def _nearest_point_distance(points_gdf, polygon_gdf):
-    centroids = polygon_gdf.geometry.centroid
-    distances = centroids.apply(lambda g: points_gdf.distance(g).min())
+    # Extract coordinates into numpy arrays for vectorization
+    g_centroids = polygon_gdf.geometry.centroid
+    src_coords = np.column_stack((g_centroids.x, g_centroids.y))
+    tgt_coords = np.column_stack((points_gdf.geometry.x, points_gdf.geometry.y))
 
-    return distances
+    # Build a KDTree for fast nearest-neighbor lookup
+    tree = cKDTree(tgt_coords)
+    
+    # Query the tree: k=1 returns the nearest neighbor
+    # distances is a numpy array of float distances
+    distances, _ = tree.query(src_coords, k=1)
+
+    return pd.Series(distances, index=polygon_gdf.index)
 
 
 def _get_grid_centroid_xy(grid_polygon):
     return grid_polygon.centroid.get_coordinates()
+
+
+def _validate_df(df, required=False):
+    """Validate a pandas DataFrame input."""
+    if df is None:
+        if required:
+            raise ValueError("Required input is missing.")
+        return None
+    if not hasattr(df, "empty"):
+        raise TypeError("Input must be a pandas DataFrame.")
+    if df.empty and required:
+        raise ValueError("Required input DataFrame is empty.")
+    return df
 
 
 def input_points_to_spatial(input_points):
@@ -62,6 +85,9 @@ def input_points_to_spatial(input_points):
             print("Necessary columns 'latitude' and 'longitude' not found.")
             return None
 
+        # Check for NA values in spatial fields, drop
+        input_points = input_points.dropna(subset=["latitude", "longitude"]).copy()
+
         input_gdf = gpd.GeoDataFrame(
             input_points,
             geometry=gpd.points_from_xy(input_points.longitude, input_points.latitude),
@@ -74,93 +100,45 @@ def input_points_to_spatial(input_points):
         return None
 
 
-def visualize(points_gdf, grid_gdf, region_gdf):
-    """Quick visualization of crime points, grid, and region boundary."""
-    _, ax = plt.subplots(figsize=(8, 8))
-    region_gdf.plot(ax=ax, color="none", edgecolor="black", linewidth=1)
-    grid_gdf.plot(ax=ax, color="none", edgecolor="lightgray")
-    points_gdf.plot(ax=ax, color="red", markersize=5, alpha=0.5)
-    plt.title("Crime Points and Grid")
-    plt.show()
-
-
-def visualize_grid_by_feature(gdf, feature):
-    """
-    Plots a GeoDataFrame grid colored by a single numeric feature.
-
-    Parameters:
-    - gdf: GeoDataFrame with a geometry column.
-    - feature: str, the column name to color by.
-    """
-    _, ax = plt.subplots(1, 1, figsize=(10, 10))
-    gdf.plot(
-        column=feature, ax=ax, cmap="viridis", legend=True, edgecolor="k", linewidth=0.2
-    )
-    ax.set_axis_off()
-    ax.set_title(f"Grid colored by {feature}", fontsize=14)
-    plt.show()
-
-
-def visualize_predictions(gdf, predictions, title="", cmap="viridis"):
-    """
-    Plots a GeoDataFrame grid colored by predictions.
-
-    Parameters:
-    - gdf: GeoDataFrame with a geometry column.
-    - predictions: array-like of predicted values, same length as gdf.
-    - title: plot title.
-    - cmap: colormap for the values.
-    """
-    gdf = gdf.copy()
-    gdf["pred"] = predictions
-
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-    gdf.plot(column="pred", ax=ax, cmap=cmap, legend=True, edgecolor="k", linewidth=0.2)
-    ax.set_axis_off()
-    ax.set_title(title, fontsize=14)
-    plt.show()
-
-
-def visualize_predictions_osm(
-    gdf, predictions, title="", cmap="viridis", use_osm=True, zoom=12
+def load_and_process_inputs(
+    points_file,
+    features_file=None,
+    region_file=None,
+    do_projection=False,
+    projected_crs="EPSG:3857",
 ):
-    """
-    Plots a GeoDataFrame grid colored by predictions, optionally overlaid on an OpenStreetMap basemap.
 
-    Parameters:
-    - gdf: GeoDataFrame with a geometry column.
-    - predictions: array-like of predicted values, same length as gdf.
-    - title: str, plot title.
-    - cmap: colormap for the values.
-    - use_osm: bool, whether to include an OpenStreetMap basemap.
-    - zoom: int, zoom level for the OSM tiles.
-    """
-    gdf = gdf.copy()
-    gdf["pred"] = predictions
+    try:
+        points = _validate_df(points_file, required=True)
+        points_spatial = input_points_to_spatial(points)
 
-    # Ensure the GeoDataFrame is in the correct CRS for OSM (EPSG:3857)
-    if gdf.crs is None or gdf.crs.to_string() != "EPSG:3857":
-        gdf = gdf.to_crs(epsg=3857)
-
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-    gdf.plot(
-        column="pred",
-        ax=ax,
-        cmap=cmap,
-        legend=True,
-        edgecolor="k",
-        linewidth=0.2,
-        alpha=0.7,
-    )
-
-    if use_osm:
-        ctx.add_basemap(
-            ax, crs=gdf.crs, source=ctx.providers.OpenStreetMap.Mapnik, zoom=zoom
+        # features (CSV)
+        features = (
+            input_points_to_spatial(features_file)
+            if features_file is not None
+            else None
         )
 
-    ax.set_axis_off()
-    ax.set_title(title or "Predicted Crime Intensity", fontsize=14)
-    plt.show()
+        # region (shapefile)
+        region = None
+        if region_file is not None:
+            if isinstance(region_file, gpd.GeoDataFrame):
+                region = region_file
+            else:
+                region = gpd.read_file(region_file)
+
+    except Exception as e:
+        raise RuntimeError(f"Error loading input files: {e}")
+
+    # Handle projection
+    if do_projection:
+        points_spatial = points_spatial.to_crs(projected_crs)
+        if features is not None:
+            features = features.to_crs(projected_crs)
+        if region is not None:
+            region = region.to_crs(projected_crs)
+
+    return points_spatial, features, region
 
 
 def create_grid(polygon_gdf, cell_size):
@@ -197,71 +175,79 @@ df = _raw_points_from_csv(INPUT_FILE_PATH)
 features = _raw_points_from_csv(INPUT_FEATURES_PATH)
 region = gpd.read_file(INPUT_REGION_PATH)
 
+# filter just for malmo
+df = df[df["kommun"] == "MALMÖ"]
+
 
 def main(
-    crime_points=df,
-    features_points=features,
-    study_region=region,
+    crime_points,
+    timevar,
+    features_var,
+    features_points=None,
+    study_region=None,
     do_projection=True,
     projected_crs=PROJECTED_CRS,
     export_raw=True,
 ):
 
-    # first, take crime points and study region
-    # convert to spatial, project, and define a study grid
-    points_spatial = input_points_to_spatial(crime_points)
-    features_spatial = input_points_to_spatial(features_points)
+    # load inputs, project
+    points_spatial, features_spatial, study_region = load_and_process_inputs(
+        crime_points, features_points, study_region, do_projection, projected_crs
+    )
 
-    if do_projection:
-        points_spatial = points_spatial.to_crs(projected_crs)
-        features_spatial = features_spatial.to_crs(projected_crs)
-        study_region = study_region.to_crs(projected_crs)
+    # If we didn't get a spatial boundary object, use convex hull of all points
+    if study_region is None:
+        hull = points_spatial.geometry.union_all().convex_hull
+        study_region = gpd.GeoDataFrame(geometry=[hull], crs=points_spatial.crs)
 
-    # define grid & clip points to grid
+    # define the region grid, clip input points to boundry
     region_grid = create_grid(study_region, GRID_CELL_SIZE_METERS)
     clipped_points = gpd.clip(points_spatial, study_region)
-    clipped_features = gpd.clip(features_spatial, study_region)
+
+    # optional, if risk features are present, also clip
+    if features_points is not None and not features_points.empty:
+        clipped_features = gpd.clip(features_spatial, study_region)
 
     # --------- Add Features ---------#
 
     # then functionality to perform grid counts of outcome variable
     # and add spatial risk factors
-    unique_times = clipped_points["yearvar"].unique()  # TODO: Set as an argparse param
+    unique_times = sorted(clipped_points[timevar].unique().tolist())
 
     for time in unique_times:
         polygon_counts = _count_point_in_polygon(
-            clipped_points[clipped_points["yearvar"] == time], region_grid
+            clipped_points[clipped_points[timevar] == time], region_grid
         )
         region_grid[f"crimes_{time}"] = (
             region_grid.index.map(polygon_counts).fillna(0).astype(int)
         )
 
-    # distance from polygon to nearest risk factor
-    unique_types = clipped_features["type"].unique()  # TODO: Set as an argparse param
+    # check that we have at least three time periods
+    # train, test, validation
+    num_time_periods = len(unique_times)
+    if num_time_periods < 3:
+        raise ValueError(
+            f"Insufficient time periods ({num_time_periods}) for train/test/eval split."
+        )
+
+    time_fit = unique_times[0 : num_time_periods - 2]
+    time_test = unique_times[num_time_periods - 2]
+    time_eval = unique_times[num_time_periods - 1]
+
+    
+    unique_types = clipped_features[features_var].unique().tolist()
     for type in unique_types:
         feature_dist = _nearest_point_distance(
-            clipped_features[clipped_features["type"] == type], region_grid
+            clipped_features[clipped_features[features_var] == type], region_grid
         )
         region_grid[type] = feature_dist
 
-    # !! TEST ONLY !!
-    # try a basic random forest model
-    # use 2020 - 2021 crimes as predictions
-    # fit on 2022 crimes
-    # use 2023 crimes as hold-out evaluation for model eval
-    # !! TEST ONLY !!
+    # Assuming unique_types contains the risk factors (e.g., 'gas_station', 'bar')
+    crime_pred_features = [f"crimes_{t}" for t in time_fit]
+    pred_features = crime_pred_features + unique_types + ["x", "y"]
 
-    pred_features = [
-        "crimes_2020",
-        "crimes_2021",
-        "gas_station",
-        "bar",
-        "liquor_store",
-        "x",
-        "y",
-    ]
-    target = "crimes_2022"
-    eval_target = "crimes_2023"
+    target = f"crimes_{time_test}"
+    eval_target = f"crimes_{time_eval}"
 
     X = region_grid[pred_features]
     y = region_grid[target]
@@ -275,7 +261,7 @@ def main(
     importances = pd.Series(rf.feature_importances_, index=X.columns)
     print(importances.sort_values(ascending=False))
 
-    visualize_predictions_osm(region_grid, y_pred)  # export pred map to osm
+    visualize_predictions(region_grid, y_pred, use_osm=True)  # export pred map to osm
 
     # insert code to compute metrics like PAI, PEI, RRI, etc...
 
@@ -285,4 +271,10 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    main(
+        crime_points=df,
+        timevar="yearvar",
+        features_var="type",
+        features_points=features,
+        study_region=region,
+    )
