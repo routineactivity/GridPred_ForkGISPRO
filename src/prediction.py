@@ -4,9 +4,7 @@ from scipy.spatial import cKDTree
 from shapely.geometry import box
 import numpy as np
 
-DEFAULT_CRS = "4326"
 DEFAULT_PROJECTED_CRS = "3857"  # note, not ideal for accuracy
-
 
 class GridPred:
     def __init__(
@@ -16,7 +14,12 @@ class GridPred:
         input_features_data=None,
         features_names_variable=None,
         input_study_region=None,
+        input_crs=None,
     ):
+
+        # input crs
+        self.input_crs = input_crs
+
         # load crime input data points
         # should contain long-lat and a date variable
         self.crime_points = self._raw_points_from_csv(input_crime_data)
@@ -154,7 +157,7 @@ class GridPred:
                 geometry=gpd.points_from_xy(
                     input_points.longitude, input_points.latitude
                 ),
-                crs=DEFAULT_CRS,
+                crs=self.input_crs,
             )
             return input_gdf
 

@@ -1,256 +1,87 @@
-import geopandas as gpd
 import pandas as pd
-from scipy.spatial import cKDTree
-import numpy as np
-from shapely.geometry import box
+import argparse
+
+from src.prediction import GridPred
 from sklearn.ensemble import RandomForestRegressor
-from src.plotting import visualize_predictions
-
-INPUT_FILE_PATH = "/home/gmcirco/Documents/Projects/data/crime_2019-2023_v2.csv"
-INPUT_FEATURES_PATH = "/home/gmcirco/Documents/Projects/data/features_malmo.csv"
-INPUT_REGION_PATH = (
-    "/home/gmcirco/Documents/Projects/data/malmo_shapefiles/DeSo_Malmö.shp"
-)
-
-GRID_CELL_SIZE_METERS = 300
-DEFAULT_CRS = "4326"
-PROJECTED_CRS = "3006"
 
 
-def _raw_points_from_csv(file_path, fields_to_lower=True):
-    "Load csv input from a file path"
-    df = pd.read_csv(file_path)
-    if fields_to_lower:
-        df.columns = [x.lower() for x in df.columns]
-    return df
+DO_PROJECTION = False
 
 
-def _contains_long_lat(listcols) -> bool:
-    "Check if long-lat colums are present in input csv"
-    lower_cols = [item.lower() for item in listcols]
-    is_latitude_present = "latitude" in lower_cols
-    is_longitude_present = "longitude" in lower_cols
-
-    return is_latitude_present and is_longitude_present
-
-
-def _count_point_in_polygon(points_gdf, polygon_gdf):
-    joined = gpd.sjoin(points_gdf, polygon_gdf, predicate="within")
-    counts = joined.groupby("index_right").size()
-
-    return counts
-
-
-def _nearest_point_distance(points_gdf, polygon_gdf):
-    # Extract coordinates into numpy arrays for vectorization
-    g_centroids = polygon_gdf.geometry.centroid
-    src_coords = np.column_stack((g_centroids.x, g_centroids.y))
-    tgt_coords = np.column_stack((points_gdf.geometry.x, points_gdf.geometry.y))
-
-    # Build a KDTree for fast nearest-neighbor lookup
-    tree = cKDTree(tgt_coords)
-    
-    # Query the tree: k=1 returns the nearest neighbor
-    # distances is a numpy array of float distances
-    distances, _ = tree.query(src_coords, k=1)
-
-    return pd.Series(distances, index=polygon_gdf.index)
-
-
-def _get_grid_centroid_xy(grid_polygon):
-    return grid_polygon.centroid.get_coordinates()
-
-
-def _validate_df(df, required=False):
-    """Validate a pandas DataFrame input."""
-    if df is None:
-        if required:
-            raise ValueError("Required input is missing.")
-        return None
-    if not hasattr(df, "empty"):
-        raise TypeError("Input must be a pandas DataFrame.")
-    if df.empty and required:
-        raise ValueError("Required input DataFrame is empty.")
-    return df
-
-
-def input_points_to_spatial(input_points):
-    """
-    Converts a pandas DataFrame (input_points) with latitude and longitude
-    values to a GeoDataFrame (spatial points object).
-    """
-
-    try:
-        if not _contains_long_lat(input_points.columns.tolist()):
-            print("Necessary columns 'latitude' and 'longitude' not found.")
-            return None
-
-        # Check for NA values in spatial fields, drop
-        input_points = input_points.dropna(subset=["latitude", "longitude"]).copy()
-
-        input_gdf = gpd.GeoDataFrame(
-            input_points,
-            geometry=gpd.points_from_xy(input_points.longitude, input_points.latitude),
-            crs=DEFAULT_CRS,
-        )
-        return input_gdf
-
-    except Exception as e:
-        print(f"Error converting points to GeoDataFrame: {e}")
-        return None
-
-
-def load_and_process_inputs(
-    points_file,
-    features_file=None,
-    region_file=None,
-    do_projection=False,
-    projected_crs="EPSG:3857",
-):
-
-    try:
-        points = _validate_df(points_file, required=True)
-        points_spatial = input_points_to_spatial(points)
-
-        # features (CSV)
-        features = (
-            input_points_to_spatial(features_file)
-            if features_file is not None
-            else None
-        )
-
-        # region (shapefile)
-        region = None
-        if region_file is not None:
-            if isinstance(region_file, gpd.GeoDataFrame):
-                region = region_file
-            else:
-                region = gpd.read_file(region_file)
-
-    except Exception as e:
-        raise RuntimeError(f"Error loading input files: {e}")
-
-    # Handle projection
-    if do_projection:
-        points_spatial = points_spatial.to_crs(projected_crs)
-        if features is not None:
-            features = features.to_crs(projected_crs)
-        if region is not None:
-            region = region.to_crs(projected_crs)
-
-    return points_spatial, features, region
-
-
-def create_grid(polygon_gdf, cell_size):
-    "Create a regular grid over a polygon shapefile, add x-y coordinates as output"
-
-    minx, miny, maxx, maxy = polygon_gdf.total_bounds
-    x_coords = list(range(int(minx), int(maxx) + cell_size, cell_size))
-    y_coords = list(range(int(miny), int(maxy) + cell_size, cell_size))
-
-    grid_cells = []
-    for x in x_coords[:-1]:
-        for y in y_coords[:-1]:
-            # Create a box (grid cell) for the current coordinates
-            grid_cells.append(box(x, y, x + cell_size, y + cell_size))
-
-    # 3. Create a GeoDataFrame from the grid cells
-    grid_gdf = gpd.GeoDataFrame(geometry=grid_cells, crs=polygon_gdf.crs)
-
-    # 4. Intersect the grid with the polygon to clip
-    # The 'clip' function is an easier alternative to 'overlay' for simple clipping
-    clipped_grid = gpd.clip(grid_gdf, polygon_gdf)
-
-    # add xy-coords
-    coords_xy = _get_grid_centroid_xy(clipped_grid)
-    clipped_grid["x"] = coords_xy["x"]
-    clipped_grid["y"] = coords_xy["y"]
-
-    return clipped_grid
-
-
-# for testing = load
-# input should be either just points as a csv, or points csv + shapefile
-df = _raw_points_from_csv(INPUT_FILE_PATH)
-features = _raw_points_from_csv(INPUT_FEATURES_PATH)
-region = gpd.read_file(INPUT_REGION_PATH)
-
-# filter just for malmo
-df = df[df["kommun"] == "MALMÖ"]
-
-
-def main(
-    crime_points,
-    timevar,
-    features_var,
-    features_points=None,
-    study_region=None,
-    do_projection=True,
-    projected_crs=PROJECTED_CRS,
-    export_raw=True,
-):
-
-    # load inputs, project
-    points_spatial, features_spatial, study_region = load_and_process_inputs(
-        crime_points, features_points, study_region, do_projection, projected_crs
+def main():
+    # Parser args
+    parser = argparse.ArgumentParser(
+        description="Run the a GridPred crime prediction model."
     )
 
-    # If we didn't get a spatial boundary object, use convex hull of all points
-    if study_region is None:
-        hull = points_spatial.geometry.union_all().convex_hull
-        study_region = gpd.GeoDataFrame(geometry=[hull], crs=points_spatial.crs)
+    # 1. Required positional: crime CSV path
+    parser.add_argument(
+        "input_file_path", type=str, help="Path to the input crime data CSV file."
+    )
 
-    # define the region grid, clip input points to boundry
-    region_grid = create_grid(study_region, GRID_CELL_SIZE_METERS)
-    clipped_points = gpd.clip(points_spatial, study_region)
+    # 2. Optional file inputs
+    parser.add_argument(
+        "--input_features_path",
+        type=str,
+        help="Path to the input predictive features CSV file.",
+        default=None,
+    )
+    parser.add_argument(
+        "--input_region_path",
+        type=str,
+        help="Path to the study region shapefile.",
+        default=None,
+    )
 
-    # optional, if risk features are present, also clip
-    if features_points is not None and not features_points.empty:
-        clipped_features = gpd.clip(features_spatial, study_region)
+    # 3. Required column names from the crime CSV
+    parser.add_argument(
+        "--crime_time_variable",
+        type=str,
+        required=True,
+        help="Column representing the temporal crime variable in the input crime CSV.",
+    )
 
-    # --------- Add Features ---------#
+    parser.add_argument(
+        "--features_names_variable",
+        type=str,
+        help="Column representing feature names in the predictive features CSV file.",
+    )
 
-    # then functionality to perform grid counts of outcome variable
-    # and add spatial risk factors
-    unique_times = sorted(clipped_points[timevar].unique().tolist())
+    parser.add_argument(
+        "--input_crs",
+        type=str,
+        default="EPSG:4326",
+        help="EPSG code for the input point CSV data (e.g., 'EPSG:3508').",
+    )
 
-    for time in unique_times:
-        polygon_counts = _count_point_in_polygon(
-            clipped_points[clipped_points[timevar] == time], region_grid
-        )
-        region_grid[f"crimes_{time}"] = (
-            region_grid.index.map(polygon_counts).fillna(0).astype(int)
-        )
+    parser.add_argument(
+        "--grid_size",
+        type=int,
+        default=300,
+        help="Size of the grid cell units (e.g., 300 meters).",
+    )
 
-    # check that we have at least three time periods
-    # train, test, validation
-    num_time_periods = len(unique_times)
-    if num_time_periods < 3:
-        raise ValueError(
-            f"Insufficient time periods ({num_time_periods}) for train/test/eval split."
-        )
+    args = parser.parse_args()
 
-    time_fit = unique_times[0 : num_time_periods - 2]
-    time_test = unique_times[num_time_periods - 2]
-    time_eval = unique_times[num_time_periods - 1]
+    # ---------------------------------- #
+    # Do Gridpred data prep stuff here
+    # ---------------------------------- #
 
     
-    unique_types = clipped_features[features_var].unique().tolist()
-    for type in unique_types:
-        feature_dist = _nearest_point_distance(
-            clipped_features[clipped_features[features_var] == type], region_grid
-        )
-        region_grid[type] = feature_dist
 
-    # Assuming unique_types contains the risk factors (e.g., 'gas_station', 'bar')
-    crime_pred_features = [f"crimes_{t}" for t in time_fit]
-    pred_features = crime_pred_features + unique_types + ["x", "y"]
+    gridpred = GridPred(
+        input_crime_data=args.input_file_path,
+        input_features_data=args.input_features_path,
+        input_study_region=args.input_region_path,
+        crime_time_variable=args.crime_time_variable,
+        features_names_variable=args.features_names_variable,
+        input_crs=args.input_crs
+    )
 
-    target = f"crimes_{time_test}"
-    eval_target = f"crimes_{time_eval}"
+    gridpred.prepare_data(args.grid_size, DO_PROJECTION)
 
-    X = region_grid[pred_features]
-    y = region_grid[target]
+    X = gridpred.X
+    y = gridpred.y
 
     rf = RandomForestRegressor(n_estimators=500, criterion="poisson", random_state=42)
     rf.fit(X, y)
@@ -261,20 +92,6 @@ def main(
     importances = pd.Series(rf.feature_importances_, index=X.columns)
     print(importances.sort_values(ascending=False))
 
-    visualize_predictions(region_grid, y_pred, use_osm=True)  # export pred map to osm
-
-    # insert code to compute metrics like PAI, PEI, RRI, etc...
-
-    # optional export as csv
-    if export_raw:
-        region_grid.to_csv("output/raw_input_features.csv")
-
 
 if __name__ == "__main__":
-    main(
-        crime_points=df,
-        timevar="yearvar",
-        features_var="type",
-        features_points=features,
-        study_region=region,
-    )
+    main()
