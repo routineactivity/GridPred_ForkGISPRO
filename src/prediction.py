@@ -103,7 +103,7 @@ class GridPred:
         features_file=None,
         region_file=None,
         do_projection=False,
-        projected_crs="EPSG:3857",
+        projected_crs=None,
     ):
 
         try:
@@ -130,11 +130,14 @@ class GridPred:
 
         # Handle projection
         if do_projection:
-            points_spatial = points_spatial.to_crs(projected_crs)
-            if features is not None:
-                features = features.to_crs(projected_crs)
-            if region is not None:
-                region = region.to_crs(projected_crs)
+            if projected_crs is None:
+                if self.study_region is not None and self.study_region.crs is not None:
+                    projected_crs = self.study_region.crs
+                    print(f"No projected CRS provided — adopting region CRS {projected_crs}")
+                else:
+                    print(f"No projected CRS provided — defaulting to {DEFAULT_PROJECTED_CRS}")
+                    projected_crs = DEFAULT_PROJECTED_CRS
+
 
         return points_spatial, features, region
 
@@ -196,10 +199,13 @@ class GridPred:
         self, grid_cell_size, do_projection=True, projected_crs=None, export_raw=False
     ):
 
-        # fallback, assign default projected crs if projection=True
-        if do_projection == True and not projected_crs:
-            print(f"No projection provided, defaulting to CRS {DEFAULT_PROJECTED_CRS}")
+        # Handle projection logic cleanly
+        if not do_projection:
+            projected_crs = None  # explicitly disable projection
+        elif projected_crs is None:
+            print(f"No projected CRS provided — defaulting to {DEFAULT_PROJECTED_CRS}")
             projected_crs = DEFAULT_PROJECTED_CRS
+
 
         # do pre-processing on provided features
         points_spatial, features_spatial, study_region = self.load_and_process_inputs(
@@ -273,4 +279,4 @@ class GridPred:
 
         self.X = region_grid[pred_features]
         self.y = region_grid[target]
-        self.eval = eval_target
+        self.eval = region_grid[eval_target]

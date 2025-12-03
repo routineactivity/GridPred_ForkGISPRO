@@ -3,13 +3,16 @@ import argparse
 
 from src.prediction import GridPred
 from sklearn.ensemble import RandomForestRegressor
+from argparse import Namespace 
 
 
-DO_PROJECTION = False
+def get_parser_args() -> Namespace:
+    """
+    Sets up and parses all command-line arguments for the crime prediction model.
 
-
-def main():
-    # Parser args
+    Returns:
+        Namespace: An object containing all parsed arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Run the a GridPred crime prediction model."
     )
@@ -55,19 +58,36 @@ def main():
     )
 
     parser.add_argument(
+        "--projected_crs",
+        type=str,
+        default=None,
+        help="Projected CRS to use if --do_projection is set (e.g., 'EPSG:3857'). ",
+    )
+
+    parser.add_argument(
+        "--do_projection",
+        action="store_true",
+        help="If set, project coordinates into a projected CRS.",
+    )
+
+    parser.add_argument(
         "--grid_size",
         type=int,
         default=300,
         help="Size of the grid cell units (e.g., 300 meters).",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+
+    # parse input args
+    args = get_parser_args()
 
     # ---------------------------------- #
     # Do Gridpred data prep stuff here
     # ---------------------------------- #
-
-    
 
     gridpred = GridPred(
         input_crime_data=args.input_file_path,
@@ -75,20 +95,38 @@ def main():
         input_study_region=args.input_region_path,
         crime_time_variable=args.crime_time_variable,
         features_names_variable=args.features_names_variable,
-        input_crs=args.input_crs
+        input_crs=args.input_crs,
     )
 
-    gridpred.prepare_data(args.grid_size, DO_PROJECTION)
+    gridpred.prepare_data(
+        grid_cell_size=args.grid_size,
+        do_projection=args.do_projection,
+        projected_crs=args.projected_crs,
+    )
 
+    # very basic demo model workflow
+    # can replace with xgboost or whatever model
     X = gridpred.X
     y = gridpred.y
+    eval = gridpred.eval
 
-    rf = RandomForestRegressor(n_estimators=500, criterion="poisson", random_state=42)
+    rf = RandomForestRegressor(n_estimators=1000, criterion="poisson", random_state=42)
     rf.fit(X, y)
 
     # Predict
     y_pred = rf.predict(X)
 
+    # export as dataframe
+    export_df = X.copy()
+    export_df["y_eval"] = eval
+    export_df["y_pred"] = y_pred
+
+    export_df = export_df.reset_index()
+    export_df = export_df.rename(columns={"index": "grid_cell_id"})
+    export_df.to_csv("output/preds.csv", index=False)
+
+    # print feature importances
+    # TODO: in future, can be logged and plotted
     importances = pd.Series(rf.feature_importances_, index=X.columns)
     print(importances.sort_values(ascending=False))
 
