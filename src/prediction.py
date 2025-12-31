@@ -22,12 +22,13 @@ class GridPred:
 
         # load crime input data points
         # should contain long-lat and a date variable
-        self.crime_points = self._raw_points_from_csv(input_crime_data)
+        self.crime_points = self._raw_points_from_tabular(input_crime_data)
 
         # load optional predictor features
         self.features_points = None
-        if input_features_data:
-            self.features_points = self._raw_points_from_csv(input_features_data)
+        if input_features_data is not None:
+            self.features_points = self._raw_points_from_tabular(input_features_data)
+
 
         # load optional study region
         self.study_region = None
@@ -47,12 +48,28 @@ class GridPred:
         self.y = None
         self.eval = None
 
-    def _raw_points_from_csv(self, file_path, fields_to_lower=True):
-        "Load csv input from a file path"
-        df = pd.read_csv(file_path)
+    def _raw_points_from_tabular(self, data, fields_to_lower=True):
+        """
+        Accepts either:
+        - a file path to a CSV
+        - a pandas DataFrame
+
+        Returns a pandas DataFrame.
+        """
+        if isinstance(data, pd.DataFrame):
+            df = data.copy()
+        elif isinstance(data, str):
+            df = pd.read_csv(data)
+        else:
+            raise TypeError(
+                "Input must be a pandas DataFrame or a path to a CSV file."
+            )
+
         if fields_to_lower:
-            df.columns = [x.lower() for x in df.columns]
+            df.columns = [c.lower() for c in df.columns]
+
         return df
+
 
     def _contains_long_lat(self, listcols) -> bool:
         "Check if long-lat colums are present in input csv"

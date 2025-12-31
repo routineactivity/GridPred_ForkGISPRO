@@ -18,7 +18,7 @@ def evaluate(y_true, y_pred, metrics=None, round_digits=2, **kwargs):
     else:  # list of functions or names
         metric_items = [(m, m) for m in metrics]
 
-    for name, m in metric_items:
+    for name, _ in metric_items:
         # If name is string, map to function (registry)
         if isinstance(name, str):
             func = metrics[name]
@@ -48,8 +48,7 @@ def pai(y_true, y_pred, region_grid, top_fraction=0.01, **kwargs):
     """
     Predictive Accuracy Index (PAI).
 
-    PAI = (crimes in top hotspots / area of top hotspots)
-          ------------------------------------------------
+    PAI = (crimes in top hotspots / area of top hotspots) /
           (total crimes / total area)
 
     Args:
