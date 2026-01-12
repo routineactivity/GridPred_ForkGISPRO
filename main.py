@@ -1,10 +1,10 @@
 import pandas as pd
 import argparse
 
-from src.prediction import GridPred
-from src.plotting import visualize_predictions
-from src.model.random_forest import RandomForestGridPred
-from src.evaluate.metrics import pai, pei, rri, evaluate
+from gridpred.prediction import GridPred
+from gridpred.plotting import visualize_predictions
+from gridpred.model.random_forest import RandomForestGridPred
+from gridpred.evaluate.metrics import pai, pei, rri, evaluate
 from argparse import Namespace
 from pathlib import Path
 

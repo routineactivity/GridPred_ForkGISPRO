@@ -1,5 +1,5 @@
 from sklearn.ensemble import RandomForestRegressor
-from src.model.base import GridPredPredictor
+from gridpred.model.base import GridPredPredictor
 
 
 class RandomForestGridPred(GridPredPredictor):

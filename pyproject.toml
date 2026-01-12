@@ -1,6 +1,6 @@
 [project]
 name = "gridpred"
-version = "0.1.0"
+version = "1.0.1"
 description = "Grid-based prediction using Random Forests"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -12,3 +12,11 @@ dependencies = [
     "scipy>=1.16.3",
     "shapely>=2.1.2",
 ]
+
+[tool.hatch.build.targets.wheel]
+# This ensures only the gridpred folder is packaged
+packages = ["gridpred"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

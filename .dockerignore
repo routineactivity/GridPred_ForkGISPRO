@@ -1,0 +1,15 @@
+# Exclude git and metadata
+.git
+.gitignore
+README.md
+LICENSE
+Makefile
+
+# Artifacts
+notebooks/
+**/__pycache__/
+*.pyc
+
+# Local data
+output/*
+!output/.gitkeep
