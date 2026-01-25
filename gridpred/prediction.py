@@ -112,6 +112,25 @@ class GridPred:
             raise ValueError("Required input DataFrame is empty.")
         return df
 
+    def _event_feature_names(self, times):
+        return [f"events_{t}" for t in times]
+
+    def _build_feature_list(self, event_features, spatial_features):
+        return event_features + spatial_features
+
+    def _define_time_splits(self, unique_times):
+        if len(unique_times) < 3:
+            raise ValueError(
+                f"Insufficient time periods ({len(unique_times)}) for train/test/eval split."
+            )
+
+        return {
+            "train_features": unique_times[:-2],
+            "train_target": unique_times[-2],
+            "eval": unique_times[-1],
+            "final_features": unique_times[:-1],
+        }
+
     def load_and_process_inputs(
         self,
         points_file,
@@ -219,7 +238,7 @@ class GridPred:
 
         # Handle projection logic cleanly
         if not do_projection:
-            projected_crs = None  # explicitly disable projection
+            projected_crs = None
         elif projected_crs is None:
             print(f"No projected CRS provided — defaulting to {DEFAULT_PROJECTED_CRS}")
             projected_crs = DEFAULT_PROJECTED_CRS
@@ -272,17 +291,7 @@ class GridPred:
                 self.region_grid.index.map(polygon_counts).fillna(0).astype(int)
             )
 
-        # check that we have at least three time periods
-        # train, test, validation
-        num_time_periods = len(unique_times)
-        if num_time_periods < 3:
-            raise ValueError(
-                f"Insufficient time periods ({num_time_periods}) for train/test/eval split."
-            )
-
-        time_fit = unique_times[0 : num_time_periods - 2]
-        time_test = unique_times[num_time_periods - 2]
-        time_eval = unique_times[num_time_periods - 1]
+        # --------- Spatial Features ---------#
 
         # if named features variables are provided, identify distance to grid cells
         unique_types = []
@@ -299,13 +308,37 @@ class GridPred:
                 )
                 self.region_grid[type] = feature_dist
 
+        SPATIAL_FEATURES = unique_types + ["x", "y"]
+
+        # --------- Temporal Features ---------#
+
+        # define number of splits on unique time periods
+        # training dataset gets t-2 for features
+        splits = self._define_time_splits(unique_times)
+
+        train_feature_times = splits["train_features"]
+        train_target_time = splits["train_target"]
+        eval_time = splits["eval"]
+        final_feature_times = splits["final_features"]
+        final_target_time = eval_time
+
         # Assuming unique_types contains the risk factors (e.g., 'gas_station', 'bar')
-        crime_pred_features = [f"events_{t}" for t in time_fit]
-        pred_features = crime_pred_features + unique_types + ["x", "y"]
+        train_event_features = self._event_feature_names(train_feature_times)
+        final_event_features = self._event_feature_names(final_feature_times)
 
-        target = f"events_{time_test}"
-        eval_target = f"events_{time_eval}"
+        # build the final feature list and targets
+        train_features = self._build_feature_list(
+            train_event_features, SPATIAL_FEATURES
+        )
+        final_features = self._build_feature_list(
+            final_event_features, SPATIAL_FEATURES
+        )
 
-        self.X = self.region_grid[pred_features]
-        self.y = self.region_grid[target]
-        self.eval = self.region_grid[eval_target]
+        self.X = self.region_grid[train_features]
+        self.X_final = self.region_grid[final_features]
+
+        self.y = self.region_grid[f"events_{train_target_time}"]
+        self.y_final = self.region_grid[f"events_{final_target_time}"]
+
+        # hold out eval for train
+        self.eval = self.region_grid[f"events_{eval_time}"]
